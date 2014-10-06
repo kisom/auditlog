@@ -48,7 +48,7 @@ func main() {
 		checkerr(err)
 
 		fmt.Printf("Verifying %s\n", log)
-		cl, ok := auditlog.VerifyCertifiedLog(in, pub)
+		cl, ok := auditlog.VerifyCertification(in, pub)
 		if !ok {
 			err = errors.New("failed to verified certified log")
 			checkerr(err)

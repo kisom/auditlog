@@ -2,7 +2,7 @@ package auditlog
 
 import (
 	"database/sql"
-	"fmt"
+	"errors"
 
 	_ "github.com/mxk/go-sqlite/sqlite3"
 	// _ "github.com/mattn/go-sqlite3"
@@ -54,6 +54,16 @@ func (l *Logger) setupDB(dbFile string) (err error) {
 		return
 	}
 
+	if l.db == nil {
+		err = errors.New("auditlog: failed to open database")
+		return
+	}
+
+	err = l.db.Ping()
+	if err != nil {
+		return
+	}
+
 	for tableName, tableSQL := range tables {
 		err = checkTable(l.db, tableName, tableSQL)
 		if err != nil {
@@ -92,7 +102,6 @@ where type='table' and name=?`, tableName)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("\t[+] table %s updated\n", tableName)
 	}
 	return nil
 }
@@ -207,5 +216,87 @@ func loadAttributes(db *sql.DB, ev *Event) error {
 
 		ev.Attributes = append(ev.Attributes, attr)
 	}
+	return nil
+}
+
+func countEvents(db *sql.DB) (uint64, error) {
+	var count uint64
+	err := db.QueryRow(`SELECT count(*) FROM events`).Scan(&count)
+	return count, err
+}
+
+var errAuditFailure = errors.New("auditlog: failed to verify audit chain")
+
+func getSignature(db *sql.DB, serial uint64) ([]byte, error) {
+	var sig []byte
+	err := db.QueryRow(`SELECT signature FROM events WHERE id=?`, serial).Scan(&sig)
+	if err != nil {
+		return nil, err
+	}
+	return sig, nil
+}
+
+func loadEvent(db *sql.DB, serial uint64) (*Event, error) {
+	var ev Event
+
+	row := db.QueryRow(`SELECT * FROM events WHERE id=?`, serial)
+	err := row.Scan(&ev.Serial, &ev.When, &ev.Received, &ev.Level,
+		&ev.Actor, &ev.Event, &ev.Signature)
+	if err != nil {
+		return nil, err
+	}
+
+	err = loadAttributes(db, &ev)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ev, nil
+}
+
+func (l *Logger) verifyEvent(serial uint64) error {
+	var prev []byte
+	err := begin(l.db)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err != nil {
+			rollback(l.db)
+		} else {
+			commit(l.db)
+		}
+	}()
+
+	if serial > 0 {
+		prev, err = getSignature(l.db, serial-1)
+		if err != nil {
+			return err
+		}
+	}
+
+	ev, err := loadEvent(l.db, serial)
+	if err != nil {
+		return err
+	}
+
+	if !ev.Verify(&l.signer.PublicKey, prev) {
+		err = errAuditFailure
+		return err
+	}
+
+	return nil
+}
+
+func (l *Logger) verifyAuditChain() error {
+	var err error
+	for i := uint64(0); i < l.counter; i++ {
+		err = l.verifyEvent(i)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

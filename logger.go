@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -17,6 +18,7 @@ import (
 
 var prng = rand.Reader
 
+// A Logger is responsible for recording security events.
 type Logger struct {
 	signer        *ecdsa.PrivateKey
 	stdout        io.Writer
@@ -28,69 +30,161 @@ type Logger struct {
 	db            *sql.DB
 }
 
+// Public returns the public signature key packed as in DER-encoded
+// PKIX format.
 func (l *Logger) Public() ([]byte, error) {
 	return x509.MarshalPKIXPublicKey(&l.signer.PublicKey)
 }
 
-func (l *Logger) Count() int {
+func (l *Logger) Count() uint64 {
 	l.lock.Lock()
 	defer l.lock.Unlock()
-	// count := len(l.logs)
-	return 0
+
+	count, err := countEvents(l.db)
+	if err != nil {
+		attr := Attribute{"error", err.Error()}
+		l.CriticalSync("auditlog", "count", []Attribute{attr})
+		return 0
+	}
+	return count
 }
 
-func (l *Logger) Store(event *Event) error {
-	fmt.Fprintf(os.Stderr, "persistent logs not implemented")
-	return nil
+func (l *Logger) ready() bool {
+	return l.listener != nil
 }
 
 func (l *Logger) logEvent(when int64, level int, actor, event string, attributes []Attribute, wait chan struct{}) {
-	if _, ok := LevelStrings[level]; !ok {
-		level = LevelUnknown
+	if _, ok := levelStrings[level]; !ok {
+		level = levelUnknown
 	}
 
 	ev := &Event{
 		When:       time.Now().UnixNano(),
-		Level:      LevelStrings[level],
+		Level:      levelStrings[level],
 		Actor:      actor,
 		Event:      event,
 		Attributes: attributes,
 		wait:       wait,
 	}
-	l.listener <- ev
+
+	if l.ready() {
+		l.listener <- ev
+	} else {
+		if wait != nil {
+			close(wait)
+		}
+	}
 }
 
+// Debug records a debug event. In practice, this should not be used;
+// it is intended only for debugging the audit logger. This does not
+// wait for the audit logger to finish recording the event.
 func (l *Logger) Debug(actor, event string, attributes []Attribute) {
-	go l.logEvent(time.Now().UnixNano(), LevelDebug, actor, event, attributes, nil)
+	if !l.ready() {
+		return
+	}
+
+	go l.logEvent(time.Now().UnixNano(), levelDebug, actor, event, attributes, nil)
 }
 
+// Info records an informational event. This probably includes events
+// that are expected normally. This does not wait for the audit logger
+// to finish recording the event.
 func (l *Logger) Info(actor, event string, attributes []Attribute) {
-	go l.logEvent(time.Now().UnixNano(), LevelInfo, actor, event, attributes, nil)
+	if !l.ready() {
+		return
+	}
+
+	go l.logEvent(time.Now().UnixNano(), levelInfo, actor, event, attributes, nil)
 }
 
+// InfoSync performs the same function as Info, except it waits for
+// the event to be recorded.
 func (l *Logger) InfoSync(actor, event string, attributes []Attribute) {
+	if !l.ready() {
+		return
+	}
+
 	wait := make(chan struct{}, 0)
-	go l.logEvent(time.Now().UnixNano(), LevelInfo, actor, event, attributes, wait)
+	go l.logEvent(time.Now().UnixNano(), levelInfo, actor, event, attributes, wait)
 	<-wait
 }
 
+// Warning records an event that isn't an error, but it is a more
+// urgent event. Examples of warning events might be users selecting a
+// deprecated cipher. This does not wait for the audit logger to
+// finish recording the event.
 func (l *Logger) Warning(actor, event string, attributes []Attribute) {
-	go l.logEvent(time.Now().UnixNano(), LevelWarning, actor, event, attributes, nil)
+	if !l.ready() {
+		return
+	}
+
+	go l.logEvent(time.Now().UnixNano(), levelWarning, actor, event, attributes, nil)
 }
 
+// WarningSync performs the same function as Warning, except it waits
+// for the event to be recorded.
+func (l *Logger) WarningSync(actor, event string, attributes []Attribute) {
+	if !l.ready() {
+		return
+	}
+
+	wait := make(chan struct{}, 0)
+	go l.logEvent(time.Now().UnixNano(), levelWarning, actor, event, attributes, wait)
+	<-wait
+}
+
+// Error records an error event. An example might be an authentication
+// failure. This does not wait for the audit logger to finish
+// recording the event.
 func (l *Logger) Error(actor, event string, attributes []Attribute) {
-	go l.logEvent(time.Now().UnixNano(), LevelError, actor, event, attributes, nil)
+	if !l.ready() {
+		return
+	}
+
+	go l.logEvent(time.Now().UnixNano(), levelError, actor, event, attributes, nil)
 }
 
-func (l *Logger) Critical(actor, event string, attributes []Attribute) {
-	go l.logEvent(time.Now().UnixNano(), LevelCritical, actor, event, attributes, nil)
+// ErrorSync performs the same function as error, except it waits for
+// the event to be recorded.
+func (l *Logger) ErrorSync(actor, event string, attributes []Attribute) {
+	if !l.ready() {
+		return
+	}
+
+	wait := make(chan struct{}, 0)
+	go l.logEvent(time.Now().UnixNano(), levelError, actor, event, attributes, wait)
+	<-wait
 }
 
+// CriticalSync records a critical failure of this system. This is
+// almost always followed by a shutdown, and therefore only a
+// synchronous version that waits for the event to be recorded is
+// provided.
+func (l *Logger) CriticalSync(actor, event string, attributes []Attribute) {
+	if !l.ready() {
+		return
+	}
+
+	wait := make(chan struct{}, 0)
+	go l.logEvent(time.Now().UnixNano(), levelCritical, actor, event, attributes, wait)
+	<-wait
+}
+
+// An ECDSASignature is the structure into which an ECDSA signature is
+// packed.
 type ECDSASignature struct {
 	R, S *big.Int
 }
 
 func (l *Logger) processEvent(ev *Event) {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+
+	// After acquiring the lock, Stop may have been called.
+	if l.db == nil {
+		return
+	}
 	ev.Received = time.Now().UnixNano()
 
 	if ev.wait != nil {
@@ -100,7 +194,7 @@ func (l *Logger) processEvent(ev *Event) {
 	ev.Serial = l.counter
 	l.counter++
 	ev.Signature = l.lastSignature
-	digest := ev.Digest()
+	digest := ev.digest()
 
 	r, s, err := ecdsa.Sign(prng, l.signer, digest)
 	ev.Signature = nil
@@ -129,6 +223,8 @@ func (l *Logger) processEvent(ev *Event) {
 		if l.stderr != nil {
 			fmt.Fprintf(l.stderr, "logger failure:\n%v\n", errEv)
 		}
+
+		l.counter--
 		return
 	}
 
@@ -152,6 +248,8 @@ func (l *Logger) processEvent(ev *Event) {
 		if l.stderr != nil {
 			fmt.Fprintf(l.stderr, "logger failure:\n%v\n", errEv)
 		}
+
+		l.counter--
 		return
 	}
 
@@ -167,10 +265,15 @@ func (l *Logger) processEvent(ev *Event) {
 	}
 
 	l.lastSignature = ev.Signature
-	if l.stdout != nil {
-		fmt.Fprintf(l.stdout, "%s\n", ev)
+	if ev.Level == "DEBUG" || ev.Level == "INFO" {
+		if l.stdout != nil {
+			fmt.Fprintf(l.stdout, "%s\n", ev)
+		}
+	} else {
+		if l.stderr != nil {
+			fmt.Fprintf(l.stderr, "%s\n", ev)
+		}
 	}
-
 }
 
 func (l *Logger) processIncoming() {
@@ -184,35 +287,69 @@ func (l *Logger) processIncoming() {
 	}
 }
 
-func (l *Logger) Start(dbFile string) error {
-	err := l.setupDB(dbFile)
-	if err != nil {
-		return err
-	}
-
+// Start starts up the audit logger. This must be called prior to
+// logging events.
+func (l *Logger) Start() error {
 	l.listener = make(chan *Event, 16)
 	go l.processIncoming()
 
 	return nil
 }
 
+// Stop halts the logger and cleanly shuts down the database connection.
 func (l *Logger) Stop() {
 	l.lock.Lock()
 	close(l.listener)
 	l.listener = nil
 	l.db.Close()
+	l.db = nil
 	l.lock.Unlock()
 }
 
-func New() (*Logger, error) {
+func New(dbFile string) (*Logger, error) {
 	signer, err := ecdsa.GenerateKey(elliptic.P256(), prng)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Logger{
+	l := &Logger{
 		signer: signer,
 		stdout: os.Stdout,
 		stderr: os.Stderr,
-	}, nil
+	}
+
+	err = l.setupDB(dbFile)
+	if err != nil {
+		return nil, err
+	} else if l.db == nil {
+		err = errors.New("auditlog: failed to initialise database")
+	}
+
+	return l, nil
+}
+
+// Load restores a logger from the signature key and database file. It
+// will verify the audit chain before proceeding.
+func Load(dbFile string, signer *ecdsa.PrivateKey) (*Logger, error) {
+	l := &Logger{
+		signer: signer,
+		stdout: os.Stdout,
+		stderr: os.Stderr,
+	}
+
+	err := l.setupDB(dbFile)
+	if err != nil {
+		return nil, err
+	}
+
+	l.counter, err = countEvents(l.db)
+	if err != nil {
+		return nil, err
+	}
+
+	err = l.verifyAuditChain()
+	if err != nil {
+		return nil, err
+	}
+	return l, nil
 }
