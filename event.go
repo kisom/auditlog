@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// Attributes are used to encode additional details about an event. An
-// example event might be
+// An Attribute is used to encode additional details about an event. An
+// example attribute might be
 //
 //    Attribute{
 //            Name: "user",

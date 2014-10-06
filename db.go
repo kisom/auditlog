@@ -4,8 +4,7 @@ import (
 	"database/sql"
 	"errors"
 
-	_ "github.com/mxk/go-sqlite/sqlite3"
-	// _ "github.com/mattn/go-sqlite3"
+	_ "github.com/mxk/go-sqlite/sqlite3" // import sqlite3 driver
 )
 
 var tables = map[string]string{

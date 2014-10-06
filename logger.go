@@ -34,6 +34,7 @@ func (l *Logger) Public() ([]byte, error) {
 	return x509.MarshalPKIXPublicKey(&l.signer.PublicKey)
 }
 
+// Count returns the number of recorded events.
 func (l *Logger) Count() uint64 {
 	l.lock.Lock()
 	defer l.lock.Unlock()
