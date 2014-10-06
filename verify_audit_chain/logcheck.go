@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -41,6 +42,15 @@ func main() {
 	in, err := ioutil.ReadFile(*keyFile)
 	checkerr(err)
 
+	p, _ := pem.Decode(in)
+	if p != nil {
+		if p.Type != "EC PUBLIC KEY" {
+			fmt.Fprintf(os.Stderr, "Invalid public key.\n")
+			os.Exit(1)
+		}
+		in = p.Bytes
+	}
+
 	pub := public(in)
 
 	for i, log := range flag.Args() {
@@ -50,7 +60,7 @@ func main() {
 		fmt.Printf("Verifying %s\n", log)
 		cl, ok := auditlog.VerifyCertification(in, pub)
 		if !ok {
-			err = errors.New("failed to verified certified log")
+			err = errors.New("failed to verify certification")
 			checkerr(err)
 		}
 
@@ -62,7 +72,7 @@ func main() {
 		checkerr(err)
 
 		filename := fmt.Sprintf("verified_logs_%d.json", i)
-		fmt.Printf("Writing logs to %s\n", filename)
+		fmt.Printf("OK: writing logs to %s\n", filename)
 		err = ioutil.WriteFile(filename, buf.Bytes(), 0644)
 	}
 }

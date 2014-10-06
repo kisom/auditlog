@@ -34,9 +34,9 @@ func TestLogger(t *testing.T) {
 	testlog.stdout = nil
 }
 
-func testActor(actorID int, wg *sync.WaitGroup) {
+func testActor(actorID, count int, wg *sync.WaitGroup) {
 	actor := fmt.Sprintf("actor%d", actorID)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < count; i++ {
 		testlog.InfoSync(actor, "ping", nil)
 	}
 
@@ -52,7 +52,38 @@ func TestLogs(t *testing.T) {
 
 	testlog.InfoSync("logger_test", "generic", attrs)
 	testlog.WarningSync("logger_test", "warning", attrs)
+}
 
+func TestError(t *testing.T) {
+	prng = &bytes.Buffer{}
+	testlog.InfoSync("auditlog_test", "PRNG failure", nil)
+	prng = rand.Reader
+}
+
+func TestMultipleActors(t *testing.T) {
+	wg := new(sync.WaitGroup)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go testActor(i, 10, wg)
+	}
+	wg.Wait()
+}
+
+func TestLoad(t *testing.T) {
+	testlog.Stop()
+
+	signer := testlog.signer
+
+	var err error
+	testlog, err = New(dbFile, signer)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	testlog.Start()
+}
+
+func TestCertification(t *testing.T) {
 	pub, err := testlog.Public()
 	if err != nil {
 		t.Fatalf("%v", err)
@@ -71,33 +102,13 @@ func TestLogs(t *testing.T) {
 	}
 }
 
-func TestMultipleActors(t *testing.T) {
+func TestMultipleActorsExtended(t *testing.T) {
 	wg := new(sync.WaitGroup)
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
-		go testActor(i, wg)
+		go testActor(i, 10000, wg)
 	}
 	wg.Wait()
-}
-
-func TestError(t *testing.T) {
-	prng = &bytes.Buffer{}
-	testlog.InfoSync("auditlog_test", "PRNG failure", nil)
-	prng = rand.Reader
-}
-
-func TestLoad(t *testing.T) {
-	testlog.Stop()
-
-	signer := testlog.signer
-
-	var err error
-	testlog, err = New(dbFile, signer)
-	if err != nil {
-		t.Fatalf("%v", err)
-	}
-
-	testlog.Start()
 }
 
 func BenchmarkTestLogs(b *testing.B) {

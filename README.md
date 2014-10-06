@@ -101,3 +101,128 @@ They all take the same functions; their names indicate what log level
 they use. The `Sync` suffix indicates that the function will wait for
 the event to be recorded in the database (this takes on the order of
 tens to hundreds of milliseconds, on average).
+
+The following example might be used in an authentication system,
+noting that a user logged in:
+
+```
+    attr := auditlog.Attribute{"username", "jqp"}
+    logger.Info("auth", "login", []auditlog.Attribute{attr})
+```
+
+### Certifications
+
+A `Certification` contains a list of audit records. A formatted
+example certification produced (by default, certifications are not
+pretty-printed) looks like
+
+
+    {
+        "chain": [
+            {
+                "Actor": "logger_test",
+                "Attributes": [
+                    {
+                        "Name": "test",
+                        "Value": "123"
+                    },
+                    {
+                        "Name": "foo",
+                        "Value": "bar"
+                    },
+                    {
+                        "Name": "baz",
+                        "Value": "quux"
+                    }
+                ],
+                "Event": "generic",
+                "Level": "INFO",
+                "Received": 1412594956023501655,
+                "Serial": 0,
+                "Signature": "MEUCIFwNIaM7Hck6uyFStvgi2zolZgemxXdHVW/YshkZJhaJAiEAzuCDjJUa0JlPcI0IUcwFhiYSNy+2jeWtAYGXKfVV2n8=",
+                "When": 1412594956023495772
+            },
+            {
+                "Actor": "logger_test",
+                "Attributes": [
+                    {
+                        "Name": "test",
+                        "Value": "123"
+                    },
+                    {
+                        "Name": "foo",
+                        "Value": "bar"
+                    },
+                    {
+                        "Name": "baz",
+                        "Value": "quux"
+                    }
+                ],
+                "Event": "warning",
+                "Level": "WARNING",
+                "Received": 1412594956041156294,
+                "Serial": 1,
+                "Signature": "MEUCIE7wA94TvIZrcNmQO3QoNrn9rvsjTsAguE581zXNwyq1AiEAvrqXRvCNsZCUm49QVxG3OBlnKWru9emzizgN1Qm8/zM=",
+                "When": 1412594956026100241
+            },
+            {
+                "Actor": "actor0",
+                "Attributes": null,
+                "Event": "ping",
+                "Level": "INFO",
+                "Received": 1412594956068389191,
+                "Serial": 2,
+                "Signature": "MEUCIQDf02F9xwimcmlKv0fZAznJkJxetd80H8kZgQYdZyOR+QIgfG3MoWV45IzOq7FZoxOTb32WPZnaa90dikKj70PSxzo=",
+                "When": 1412594956056844823
+            },
+            {
+                "Actor": "actor1",
+                "Attributes": null,
+                "Event": "ping",
+                "Level": "INFO",
+                "Received": 1412594956086931409,
+                "Serial": 3,
+                "Signature": "MEUCIBAr0HxDOu9T3bk/e6rCKls6zqILk+8N5vNVjmtm6L3iAiEAhRvG4fm5VgofJJwJuUhiJdgXAVb4To1wOONn64My6h0=",
+                "When": 1412594956056848561
+            }
+        ],
+        "errors": [
+            {
+                "event": {
+                    "Actor": "auditlog_test",
+                    "Attributes": null,
+                    "Event": "PRNG failure",
+                    "Level": "INFO",
+                    "Received": 1412594956056174667,
+                    "Serial": 2,
+                    "Signature": null,
+                    "When": 1412594956041239087
+                },
+                "message": "signature: EOF",
+                "when": 1412594956056326920
+            }
+        ],
+        "when": 1412594956803267916
+    }
+
+The public key used to generate this certification is
+
+    -----BEGIN EC PUBLIC KEY-----
+    MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtySFtEw1pvr1F8SngKxAoIwlUmzf
+    AS20/9IH1u/+jNEQT8rw2e84Oytrces8p49bcv/3jkmNG/VZDmpj7FlxuA==
+    -----END EC PUBLIC KEY-----
+
+The `verify_audit_chain` tool will verify the chain, and save a
+formatted, verified chain:
+
+    $ verify_audit_chain certified.json
+    Verifying certified.json
+    OK: writing logs to verified_logs_0.json
+
+`verify_audit_chain` can be installed with
+
+    go get github.com/kisom/auditlog/verify_audit_log
+
+### License
+
+`auditlog` is released under the ISC license.
