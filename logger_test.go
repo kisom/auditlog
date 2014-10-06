@@ -1,24 +1,38 @@
-package logger
+package auditlog
 
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	"io/ioutil"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/cloudflare/cfssl/log"
 )
 
 var testlog *Logger
 
+const dbFile = "testdata/audit.db"
+
 func TestLogger(t *testing.T) {
+	os.Remove(dbFile)
 	var err error
 	testlog, err = New()
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 
-	testlog.Start()
-	testlog.stdout = nil
+	testlog.Start(dbFile)
+	//testlog.stdout = nil
+}
+
+func testActor(actorID int) {
+	actor := fmt.Sprintf("actor%d", actorID)
+	for i := 0; i < 100; i++ {
+		testlog.Info(actor, "ping", nil)
+	}
 }
 
 func TestLogs(t *testing.T) {
@@ -31,7 +45,7 @@ func TestLogs(t *testing.T) {
 	testlog.Info("logger_test", "generic", attrs)
 	testlog.Warning("logger_test", "warning", attrs)
 
-	<-time.After(1 * time.Nanosecond)
+	<-time.After(250 * time.Millisecond)
 
 	pub, err := testlog.Public()
 	if err != nil {
@@ -44,16 +58,23 @@ func TestLogs(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	ioutil.WriteFile("certified.json", cl, 0644)
+
+	_, ok := VerifyCertifiedLog(cl, &testlog.signer.PublicKey)
+	if !ok {
+		t.Fatal("failed to verified certification")
+	}
 }
 
-func TestErrorLogs(t *testing.T) {
-	prng = &bytes.Buffer{}
-	testlog.Info("logger_test", "generic", nil)
-	<-time.After(1 * time.Nanosecond)
-	prng = rand.Reader
-	if len(testlog.errors) == 0 {
-		t.Fatal("ECDSA signature should have failed")
+func TestMultipleActors(t *testing.T) {
+	for i := 0; i < 4; i++ {
+		go testActor(i)
 	}
+}
+
+func TestError(t *testing.T) {
+	prng = &bytes.Buffer{}
+	log.Info("auditlog_test", "PRNG failure", nil)
+	prng = rand.Reader
 }
 
 func BenchmarkTestLogsParallel(b *testing.B) {
@@ -63,7 +84,7 @@ func BenchmarkTestLogsParallel(b *testing.B) {
 			{"foo", "bar"},
 			{"baz", "quux"},
 		}
-		testlog.Info("logger_test", "generic", attrs)
+		testlog.InfoSync("logger_test", "generic", attrs)
 		<-time.After(1 * time.Nanosecond)
 	}
 }

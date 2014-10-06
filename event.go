@@ -1,10 +1,12 @@
-package logger
+package auditlog
 
 import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/asn1"
 	"encoding/binary"
+	"fmt"
+	"time"
 )
 
 type Attribute struct {
@@ -31,12 +33,15 @@ var LevelStrings = map[int]string{
 }
 
 type Event struct {
-	When       int64       `json:"when"`
-	Level      string      `json:"level"`
-	Actor      string      `json:"actor"`
-	Event      string      `json:"event"`
-	Attributes []Attribute `json:"attributes"`
-	Signature  []byte      `json:"signature"`
+	Serial     uint64
+	When       int64
+	Received   int64
+	Level      string
+	Actor      string
+	Event      string
+	Attributes []Attribute
+	Signature  []byte
+	wait       chan struct{}
 }
 
 func (ev *Event) Digest() []byte {
@@ -51,6 +56,16 @@ func (ev *Event) Digest() []byte {
 	}
 	h.Write(ev.Signature)
 	return h.Sum(nil)
+}
+
+func (ev *Event) String() string {
+	s := fmt.Sprintf("%s [%s] %s:%s", time.Unix(0, ev.When).Format(time.RFC3339),
+		ev.Level, ev.Actor, ev.Event)
+
+	for _, attr := range ev.Attributes {
+		s += " " + attr.Name + "=" + attr.Value
+	}
+	return s
 }
 
 func (ev *Event) Verify(signer *ecdsa.PublicKey, prev []byte) bool {
@@ -71,6 +86,5 @@ func (ev *Event) Verify(signer *ecdsa.PublicKey, prev []byte) bool {
 type ErrorEvent struct {
 	When    int64  `json:"when"`
 	Message string `json:"message"`
-	// Signature []byte `json:"signature"`
-	Event *Event `json:"event"`
+	Event   *Event `json:"event"`
 }
