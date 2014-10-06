@@ -9,20 +9,20 @@ import (
 )
 
 // A Certification contains a snapshot an audit chain, errors that
-// occurred in the range of events, a nanosecond-resolution timestamp
-// of when the certification was built, and the signature key of the
-// logger.
+// occurred in the range of events, and a nanosecond-resolution timestamp
+// of when the certification was built.
 type Certification struct {
 	When   int64         `json:"when"`
 	Chain  []*Event      `json:"chain"`
 	Errors []*ErrorEvent `json:"errors"`
-	Public []byte        `json:"public"`
 }
 
 // Certify returns a certification for the requested range of events;
 // start and end are event serial numbers. The certification is
 // returned in JSON.
 func (l *Logger) Certify(start, end uint64) ([]byte, error) {
+	l.lock.Lock()
+	defer l.lock.Unlock()
 	if end <= 0 {
 		end = l.counter - 1
 	}
@@ -31,7 +31,7 @@ func (l *Logger) Certify(start, end uint64) ([]byte, error) {
 		{"start", fmt.Sprintf("%d", start)},
 		{"end", fmt.Sprintf("%d", end)},
 	}
-	l.InfoSync("auditlog", "certify", attributes)
+	l.Info("auditlog", "certify", attributes)
 	var certification Certification
 	var err error
 
@@ -46,10 +46,6 @@ func (l *Logger) Certify(start, end uint64) ([]byte, error) {
 	}
 
 	certification.When = time.Now().UnixNano()
-	certification.Public, err = l.Public()
-	if err != nil {
-		return nil, err
-	}
 
 	return json.Marshal(certification)
 }

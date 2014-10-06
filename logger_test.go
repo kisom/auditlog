@@ -2,10 +2,13 @@ package auditlog
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -16,8 +19,13 @@ const dbFile = "testdata/audit.db"
 
 func TestLogger(t *testing.T) {
 	os.Remove(dbFile)
-	var err error
-	testlog, err = New(dbFile)
+
+	signer, err := ecdsa.GenerateKey(elliptic.P256(), prng)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	testlog, err = New(dbFile, signer)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
@@ -26,11 +34,13 @@ func TestLogger(t *testing.T) {
 	testlog.stdout = nil
 }
 
-func testActor(actorID int) {
+func testActor(actorID int, wg *sync.WaitGroup) {
 	actor := fmt.Sprintf("actor%d", actorID)
 	for i := 0; i < 100; i++ {
 		testlog.InfoSync(actor, "ping", nil)
 	}
+
+	wg.Done()
 }
 
 func TestLogs(t *testing.T) {
@@ -62,9 +72,12 @@ func TestLogs(t *testing.T) {
 }
 
 func TestMultipleActors(t *testing.T) {
+	wg := new(sync.WaitGroup)
 	for i := 0; i < 4; i++ {
-		go testActor(i)
+		wg.Add(1)
+		go testActor(i, wg)
 	}
+	wg.Wait()
 }
 
 func TestError(t *testing.T) {
@@ -79,13 +92,15 @@ func TestLoad(t *testing.T) {
 	signer := testlog.signer
 
 	var err error
-	testlog, err = Load(dbFile, signer)
+	testlog, err = New(dbFile, signer)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
+
+	testlog.Start()
 }
 
-func BenchmarkTestLogsParallel(b *testing.B) {
+func BenchmarkTestLogs(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		var attrs = []Attribute{
 			{"test", "123"},
@@ -97,7 +112,7 @@ func BenchmarkTestLogsParallel(b *testing.B) {
 	}
 }
 
-func BenchmarkCertifyLogsParallel(b *testing.B) {
+func BenchmarkCertifyLogs(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := testlog.Certify(0, 0)

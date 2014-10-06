@@ -299,6 +299,8 @@ func (l *Logger) verifyAuditChain() error {
 		}
 	}
 
+	l.lastSignature, err = getSignature(l.db, l.counter)
+
 	return nil
 }
 

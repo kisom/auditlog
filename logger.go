@@ -2,12 +2,10 @@ package auditlog
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"database/sql"
 	"encoding/asn1"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -221,7 +219,7 @@ func (l *Logger) processEvent(ev *Event) {
 		commit(l.db)
 
 		if l.stderr != nil {
-			fmt.Fprintf(l.stderr, "logger failure:\n%v\n", errEv)
+			fmt.Fprintf(l.stderr, "logger failure:\n%v\n", *errEv)
 		}
 
 		l.counter--
@@ -252,7 +250,7 @@ func (l *Logger) processEvent(ev *Event) {
 		commit(l.db)
 
 		if l.stderr != nil {
-			fmt.Fprintf(l.stderr, "logger failure:\n%v\n", errEv)
+			fmt.Fprintf(l.stderr, "logger failure:\n%v\n", *errEv)
 		}
 
 		l.counter--
@@ -318,31 +316,10 @@ func (l *Logger) Stop() {
 	l.lock.Unlock()
 }
 
-func New(dbFile string) (*Logger, error) {
-	signer, err := ecdsa.GenerateKey(elliptic.P256(), prng)
-	if err != nil {
-		return nil, err
-	}
-
-	l := &Logger{
-		signer: signer,
-		stdout: os.Stdout,
-		stderr: os.Stderr,
-	}
-
-	err = l.setupDB(dbFile)
-	if err != nil {
-		return nil, err
-	} else if l.db == nil {
-		err = errors.New("auditlog: failed to initialise database")
-	}
-
-	return l, nil
-}
-
-// Load restores a logger from the signature key and database file. It
-// will verify the audit chain before proceeding.
-func Load(dbFile string, signer *ecdsa.PrivateKey) (*Logger, error) {
+// New sets up a new logger, using the signer for signatures and
+// backed by the database at the specified file. If the database
+// exists, the audit chain will be verified.
+func New(dbFile string, signer *ecdsa.PrivateKey) (*Logger, error) {
 	l := &Logger{
 		signer: signer,
 		stdout: os.Stdout,
@@ -363,5 +340,6 @@ func Load(dbFile string, signer *ecdsa.PrivateKey) (*Logger, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return l, nil
 }
