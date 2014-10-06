@@ -27,6 +27,7 @@ var tables = map[string]string{
 )`,
 	"error_events": `CREATE TABLE error_events (
     id          INTEGER PRIMARY KEY NOT NULL,
+    serial      INTEGER NOT NULL,
     timestamp   INTEGER NOT NULL,
     received    INTEGER NOT NULL,
     level       TEXT NOT NULL,
@@ -142,8 +143,8 @@ func rollback(db *sql.DB) error {
 
 func storeError(db *sql.DB, ev *ErrorEvent) error {
 	_, err := db.Exec(`INSERT INTO error_events
-		(id, timestamp, received, level, actor, event)
-		values (?, ?, ?, ?, ?, ?)`,
+		(id, serial, timestamp, received, level, actor, event)
+		values (?, ?, ?, ?, ?, ?, ?)`, nil,
 		ev.Event.Serial, ev.Event.When, ev.Event.Received, ev.Event.Level,
 		ev.Event.Actor, ev.Event.Event)
 	if err != nil {
@@ -299,4 +300,60 @@ func (l *Logger) verifyAuditChain() error {
 	}
 
 	return nil
+}
+
+func loadErrorAttributes(db *sql.DB, ev *Event) error {
+	rows, err := db.Query(`SELECT name, value FROM error_attributes
+			      WHERE event = ? ORDER BY position`,
+		ev.Serial)
+	if err != nil {
+		return err
+	}
+
+	for rows.Next() {
+		var attr Attribute
+		err = rows.Scan(&attr.Name, &attr.Value)
+		if err != nil {
+			return err
+		}
+
+		ev.Attributes = append(ev.Attributes, attr)
+	}
+	return nil
+}
+
+func loadErrors(db *sql.DB, start, end uint64) (events []*ErrorEvent, err error) {
+	rows, err := db.Query(`SELECT * FROM error_events WHERE serial >= ? AND serial <= ?`, start, end)
+	if err != nil {
+		return
+	}
+
+	for rows.Next() {
+		var ev Event
+		var errEv ErrorEvent
+		var eventID uint64
+
+		err = rows.Scan(&eventID, &ev.Serial, &ev.When, &ev.Received, &ev.Level, &ev.Actor, &ev.Event)
+		if err != nil {
+			events = nil
+			return
+		}
+
+		err = loadErrorAttributes(db, &ev)
+		if err != nil {
+			events = nil
+			return
+		}
+
+		err = db.QueryRow(`SELECT timestamp, message FROM errors WHERE event=?`, eventID).Scan(&errEv.When, &errEv.Message)
+		if err != nil {
+			events = nil
+			return
+		}
+
+		errEv.Event = &ev
+		events = append(events, &errEv)
+	}
+
+	return
 }

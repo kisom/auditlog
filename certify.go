@@ -40,6 +40,11 @@ func (l *Logger) Certify(start, end uint64) ([]byte, error) {
 		return nil, err
 	}
 
+	certification.Errors, err = loadErrors(l.db, start, end)
+	if err != nil {
+		return nil, err
+	}
+
 	certification.When = time.Now().UnixNano()
 	certification.Public, err = l.Public()
 	if err != nil {

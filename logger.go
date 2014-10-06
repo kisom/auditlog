@@ -199,13 +199,13 @@ func (l *Logger) processEvent(ev *Event) {
 	r, s, err := ecdsa.Sign(prng, l.signer, digest)
 	ev.Signature = nil
 
-	err = begin(l.db)
 	if err != nil {
-		// This is a fatal error --- can't proceed with database.
-		panic(err.Error())
-	}
+		dberr := begin(l.db)
+		if dberr != nil {
+			// This is a fatal error --- can't proceed with database.
+			panic(dberr.Error())
+		}
 
-	if err != nil {
 		errEv := &ErrorEvent{
 			When:    time.Now().UnixNano(),
 			Message: "signature: " + err.Error(),
@@ -231,6 +231,12 @@ func (l *Logger) processEvent(ev *Event) {
 	sig := ECDSASignature{R: r, S: s}
 	ev.Signature, err = asn1.Marshal(sig)
 	if err != nil {
+		dberr := begin(l.db)
+		if dberr != nil {
+			// This is a fatal error --- can't proceed with database.
+			panic(dberr.Error())
+		}
+
 		errEv := &ErrorEvent{
 			When:    time.Now().UnixNano(),
 			Message: "marshal signature: " + err.Error(),
@@ -251,6 +257,12 @@ func (l *Logger) processEvent(ev *Event) {
 
 		l.counter--
 		return
+	}
+
+	dberr := begin(l.db)
+	if dberr != nil {
+		// This is a fatal error --- can't proceed with database.
+		panic(dberr.Error())
 	}
 
 	err = storeEvent(l.db, ev)

@@ -43,7 +43,6 @@ func TestLogs(t *testing.T) {
 	testlog.InfoSync("logger_test", "generic", attrs)
 	testlog.WarningSync("logger_test", "warning", attrs)
 
-	return
 	pub, err := testlog.Public()
 	if err != nil {
 		t.Fatalf("%v", err)
@@ -63,7 +62,6 @@ func TestLogs(t *testing.T) {
 }
 
 func TestMultipleActors(t *testing.T) {
-	t.Skip()
 	for i := 0; i < 4; i++ {
 		go testActor(i)
 	}
@@ -71,7 +69,7 @@ func TestMultipleActors(t *testing.T) {
 
 func TestError(t *testing.T) {
 	prng = &bytes.Buffer{}
-	testlog.Info("auditlog_test", "PRNG failure", nil)
+	testlog.InfoSync("auditlog_test", "PRNG failure", nil)
 	prng = rand.Reader
 }
 
