@@ -3,7 +3,6 @@ package auditlog
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 
@@ -44,8 +43,6 @@ func (cd DBConnDetails) String() string {
 		sslmode = "disable"
 	}
 	params = append(params, "sslmode="+sslmode)
-
-	fmt.Printf("CONNSTRING: %s\n", strings.Join(params, " "))
 
 	return strings.Join(params, " ")
 }
