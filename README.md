@@ -223,6 +223,13 @@ formatted, verified chain:
 
     go get github.com/kisom/auditlog/verify_audit_log
 
+
+### Database
+
+`auditlog` uses Postgres as the backend. The SQL file containing the
+schema can be found in `auditlog.sql`.
+
 ### License
 
 `auditlog` is released under the ISC license.
+

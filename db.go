@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 
-	// _ "github.com/mxk/go-sqlite/sqlite3" // import sqlite3 driver
 	_ "github.com/lib/pq"
 )
 
