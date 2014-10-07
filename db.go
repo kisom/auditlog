@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	_ "github.com/lib/pq"
 )
@@ -16,13 +17,37 @@ type DBConnDetails struct {
 }
 
 func (cd DBConnDetails) String() string {
-	var sslmode string = "verify-full"
+	var params []string
+
+	if cd.Name != "" {
+		params = append(params, "dbname="+cd.Name)
+	}
+
+	if cd.User != "" {
+		params = append(params, "user="+cd.User)
+	}
+
+	if cd.Password != "" {
+		params = append(params, "password="+cd.Password)
+	}
+
+	if cd.Host != "" {
+		params = append(params, "host="+cd.Host)
+	}
+
+	if cd.Port != "" {
+		params = append(params, "port="+cd.Port)
+	}
+
+	var sslmode string = "require"
 	if !cd.SSL {
 		sslmode = "disable"
 	}
+	params = append(params, "sslmode="+sslmode)
 
-	return fmt.Sprintf("dbname=%s user=%s password=%s host=%s port=%s sslmode=%s",
-		cd.Name, cd.User, cd.Password, cd.Host, cd.Port, sslmode)
+	fmt.Printf("CONNSTRING: %s\n", strings.Join(params, " "))
+
+	return strings.Join(params, " ")
 }
 
 func (l *Logger) setupDB(cd *DBConnDetails) (err error) {
