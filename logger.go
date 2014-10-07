@@ -8,6 +8,7 @@ import (
 	"encoding/asn1"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"os"
 	"sync"
@@ -39,13 +40,7 @@ func (l *Logger) Count() uint64 {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
-	count, err := countEvents(l.db)
-	if err != nil {
-		attr := Attribute{"error", err.Error()}
-		l.CriticalSync("auditlog", "count", []Attribute{attr})
-		return 0
-	}
-	return count
+	return l.counter
 }
 
 func (l *Logger) ready() bool {
@@ -186,8 +181,14 @@ func (l *Logger) processEvent(ev *Event) {
 	}
 	ev.Received = time.Now().UnixNano()
 
+	tx, err := l.db.Begin()
+	if err != nil {
+		// This is a fatal error --- can't proceed with database.
+		panic(err.Error())
+	}
+
 	if ev.wait != nil {
-		go close(ev.wait)
+		defer close(ev.wait)
 	}
 
 	ev.Serial = l.counter
@@ -199,25 +200,19 @@ func (l *Logger) processEvent(ev *Event) {
 	ev.Signature = nil
 
 	if err != nil {
-		dberr := begin(l.db)
-		if dberr != nil {
-			// This is a fatal error --- can't proceed with database.
-			panic(dberr.Error())
-		}
-
 		errEv := &ErrorEvent{
 			When:    time.Now().UnixNano(),
 			Message: "signature: " + err.Error(),
 			Event:   ev,
 		}
 
-		err = storeError(l.db, errEv)
+		err = storeError(tx, errEv)
 		if err != nil {
-			rollback(l.db)
+			tx.Rollback()
 			l.db.Close()
 			panic(err.Error())
 		}
-		commit(l.db)
+		tx.Commit()
 
 		if l.stderr != nil {
 			fmt.Fprintf(l.stderr, "logger failure:\n%v\n", *errEv)
@@ -230,25 +225,19 @@ func (l *Logger) processEvent(ev *Event) {
 	sig := ECDSASignature{R: r, S: s}
 	ev.Signature, err = asn1.Marshal(sig)
 	if err != nil {
-		dberr := begin(l.db)
-		if dberr != nil {
-			// This is a fatal error --- can't proceed with database.
-			panic(dberr.Error())
-		}
-
 		errEv := &ErrorEvent{
 			When:    time.Now().UnixNano(),
 			Message: "marshal signature: " + err.Error(),
 			Event:   ev,
 		}
 
-		err = storeError(l.db, errEv)
+		err = storeError(tx, errEv)
 		if err != nil {
-			rollback(l.db)
+			tx.Rollback()
 			l.db.Close()
 			panic(err.Error())
 		}
-		commit(l.db)
+		tx.Commit()
 
 		if l.stderr != nil {
 			fmt.Fprintf(l.stderr, "logger failure:\n%v\n", *errEv)
@@ -258,19 +247,14 @@ func (l *Logger) processEvent(ev *Event) {
 		return
 	}
 
-	dberr := begin(l.db)
-	if dberr != nil {
-		// This is a fatal error --- can't proceed with database.
-		panic(dberr.Error())
-	}
-
-	err = storeEvent(l.db, ev)
+	err = storeEvent(tx, ev)
 	if err != nil {
-		rollback(l.db)
+		log.Printf("database error: %v", err)
+		tx.Rollback()
 		l.db.Close()
 		panic(err.Error())
 	}
-	err = commit(l.db)
+	err = tx.Commit()
 	if err != nil {
 		panic(err.Error())
 	}
@@ -309,6 +293,14 @@ func (l *Logger) Start() error {
 
 // Stop halts the logger and cleanly shuts down the database connection.
 func (l *Logger) Stop() {
+	for {
+		if len(l.listener) == 0 {
+			break
+		}
+		log.Printf("waiting on %d elements", len(l.listener))
+		<-time.After(1 * time.Nanosecond)
+	}
+
 	l.lock.Lock()
 	close(l.listener)
 	l.listener = nil
@@ -320,14 +312,14 @@ func (l *Logger) Stop() {
 // New sets up a new logger, using the signer for signatures and
 // backed by the database at the specified file. If the database
 // exists, the audit chain will be verified.
-func New(dbFile string, signer *ecdsa.PrivateKey) (*Logger, error) {
+func New(cd *DBConnDetails, signer *ecdsa.PrivateKey) (*Logger, error) {
 	l := &Logger{
 		signer: signer,
 		stdout: os.Stdout,
 		stderr: os.Stderr,
 	}
 
-	err := l.setupDB(dbFile)
+	err := l.setupDB(cd)
 	if err != nil {
 		return nil, err
 	}

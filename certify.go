@@ -35,12 +35,24 @@ func (l *Logger) Certify(start, end uint64) ([]byte, error) {
 	var certification Certification
 	var err error
 
-	certification.Chain, err = loadEvents(l.db, start, end)
+	tx, err := l.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 
-	certification.Errors, err = loadErrors(l.db, start, end)
+	defer func() {
+		if err == nil {
+			tx.Commit()
+		} else {
+			tx.Rollback()
+		}
+	}()
+	certification.Chain, err = loadEvents(tx, start, end)
+	if err != nil {
+		return nil, err
+	}
+
+	certification.Errors, err = loadErrors(tx, start, end)
 	if err != nil {
 		return nil, err
 	}

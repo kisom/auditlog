@@ -3,53 +3,31 @@ package auditlog
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"log"
 
-	_ "github.com/mxk/go-sqlite/sqlite3" // import sqlite3 driver
+	// _ "github.com/mxk/go-sqlite/sqlite3" // import sqlite3 driver
+	_ "github.com/lib/pq"
 )
 
-var tables = map[string]string{
-	"events": `CREATE TABLE events (
-    id          INTEGER PRIMARY KEY NOT NULL,
-    timestamp   INTEGER NOT NULL,
-    received    INTEGER NOT NULL,
-    level       TEXT NOT NULL,
-    actor       TEXT NOT NULL,
-    event       TEXT NOT NULL,
-    signature   BLOB NOT NULL
-)`,
-	"attributes": `CREATE TABLE attributes (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL,
-    value       TEXT NOT NULL,
-    event       INTEGER NOT NULL,
-    position    INTEGER NOT NULL
-)`,
-	"error_events": `CREATE TABLE error_events (
-    id          INTEGER PRIMARY KEY NOT NULL,
-    serial      INTEGER NOT NULL,
-    timestamp   INTEGER NOT NULL,
-    received    INTEGER NOT NULL,
-    level       TEXT NOT NULL,
-    actor       TEXT NOT NULL,
-    event       TEXT NOT NULL
-)`,
-	"error_attributes": `CREATE TABLE error_attributes (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL,
-    value       TEXT NOT NULL,
-    event       INTEGER NOT NULL,
-    position    INTEGER NOT NULL
-)`,
-	"errors": `CREATE TABLE errors (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp   INTEGER NOT NULL,
-    message     TEXT NOT NULL,
-    event       INTEGER
-)`,
+// DBConnDetails contains the connection parameters for the database.
+type DBConnDetails struct {
+	Name, User, Password, Host, Port string
+	SSL                              bool
 }
 
-func (l *Logger) setupDB(dbFile string) (err error) {
-	l.db, err = sql.Open("sqlite3", dbFile)
+func (cd DBConnDetails) String() string {
+	var sslmode string = "verify-full"
+	if !cd.SSL {
+		sslmode = "disable"
+	}
+
+	return fmt.Sprintf("dbname=%s user=%s password=%s host=%s port=%s sslmode=%s",
+		cd.Name, cd.User, cd.Password, cd.Host, cd.Port, sslmode)
+}
+
+func (l *Logger) setupDB(cd *DBConnDetails) (err error) {
+	l.db, err = sql.Open("postgres", cd.String())
 	if err != nil {
 		return
 	}
@@ -63,61 +41,21 @@ func (l *Logger) setupDB(dbFile string) (err error) {
 	if err != nil {
 		return
 	}
-
-	for tableName, tableSQL := range tables {
-		err = checkTable(l.db, tableName, tableSQL)
-		if err != nil {
-			return
-		}
-	}
-
-	return
-}
-
-func checkTable(db *sql.DB, tableName, tableSQL string) error {
-	rows, err := db.Query(`select sql from sqlite_master
-where type='table' and name=?`, tableName)
-	if err != nil {
-		return err
-	}
-	var tblSql string
-	for rows.Next() {
-		err = rows.Scan(&tblSql)
-		break
-	}
-	rows.Close()
-	if err != nil {
-		return err
-	} else if tblSql == "" {
-		_, err = db.Exec(tableSQL)
-		if err != nil {
-			return err
-		}
-	} else if tblSql != tableSQL {
-		_, err = db.Exec("drop table " + tableName)
-		if err != nil {
-			return err
-		}
-		_, err = db.Exec(tableSQL)
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
-func storeEvent(db *sql.DB, ev *Event) error {
-	_, err := db.Exec(`INSERT INTO events
+func storeEvent(tx *sql.Tx, ev *Event) error {
+	_, err := tx.Exec(`INSERT INTO events
 		(id, timestamp, received, level, actor, event, signature)
-		values (?, ?, ?, ?, ?, ?, ?)`,
+		values ($1, $2, $3, $4, $5, $6, $7)`,
 		ev.Serial, ev.When, ev.Received, ev.Level, ev.Actor, ev.Event, ev.Signature)
 	if err != nil {
 		return err
 	}
 
 	for i, attr := range ev.Attributes {
-		_, err = db.Exec(`INSERT INTO attributes (id, name, value, event, position) values (?, ?, ?, ?, ?)`,
-			nil, attr.Name, attr.Value, ev.Serial, i)
+		_, err = tx.Exec(`INSERT INTO attributes (name, value, event, position) values ($1, $2, $3, $4)`,
+			attr.Name, attr.Value, ev.Serial, i)
 		if err != nil {
 			return err
 		}
@@ -125,46 +63,28 @@ func storeEvent(db *sql.DB, ev *Event) error {
 	return nil
 }
 
-func commit(db *sql.DB) error {
-	_, err := db.Exec(`COMMIT`)
-	return err
-}
-
-func begin(db *sql.DB) error {
-	_, err := db.Exec(`BEGIN IMMEDIATE TRANSACTION`)
-	return err
-}
-
-func rollback(db *sql.DB) error {
-	_, err := db.Exec(`ROLLBACK TRANSACTION`)
-	return err
-}
-
-func storeError(db *sql.DB, ev *ErrorEvent) error {
-	_, err := db.Exec(`INSERT INTO error_events
-		(id, serial, timestamp, received, level, actor, event)
-		values (?, ?, ?, ?, ?, ?, ?)`, nil,
-		ev.Event.Serial, ev.Event.When, ev.Event.Received, ev.Event.Level,
-		ev.Event.Actor, ev.Event.Event)
-	if err != nil {
-		return err
-	}
-
+func storeError(tx *sql.Tx, ev *ErrorEvent) error {
 	var eventID int64
-	err = db.QueryRow(`SELECT last_insert_rowid()`).Scan(&eventID)
+
+	log.Println("store error")
+	err := tx.QueryRow(`INSERT INTO error_events
+		(serial, timestamp, received, level, actor, event)
+		values ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		ev.Event.Serial, ev.Event.When, ev.Event.Received,
+		ev.Event.Level, ev.Event.Actor, ev.Event.Event).Scan(&eventID)
 	if err != nil {
 		return err
 	}
 
-	_, err = db.Exec(`INSERT INTO errors (timestamp, event, message)
-		values (?, ?, ?)`,
+	_, err = tx.Exec(`INSERT INTO errors (timestamp, event, message)
+		values ($1, $2, $3)`,
 		ev.When, eventID, ev.Message)
 	if err != nil {
 		return err
 	}
 
 	for i, attr := range ev.Event.Attributes {
-		_, err = db.Exec(`INSERT INTO error_attributes (name, value, event, position) values (?, ?, ?, ?)`,
+		_, err = tx.Exec(`INSERT INTO error_attributes (name, value, event, position) values ($1, $2, $3, $4)`,
 			attr.Name, attr.Value, eventID, i)
 		if err != nil {
 			return err
@@ -173,12 +93,14 @@ func storeError(db *sql.DB, ev *ErrorEvent) error {
 	return nil
 }
 
-func loadEvents(db *sql.DB, start, end uint64) (events []*Event, err error) {
-	rows, err := db.Query(`SELECT * FROM events WHERE id >= ? AND id <= ?`,
+func loadEvents(tx *sql.Tx, start, end uint64) (events []*Event, err error) {
+	rows, err := tx.Query(`SELECT * FROM events WHERE id >= $1 AND id <= $2`,
 		start, end)
 	if err != nil {
 		return
 	}
+
+	defer rows.Close()
 
 	for rows.Next() {
 		var ev Event
@@ -188,24 +110,25 @@ func loadEvents(db *sql.DB, start, end uint64) (events []*Event, err error) {
 			return
 		}
 
-		err = loadAttributes(db, &ev)
-		if err != nil {
-			return
-		}
-
 		events = append(events, &ev)
+	}
+
+	for i := range events {
+		err = loadAttributes(tx, events[i])
 	}
 
 	return
 }
 
-func loadAttributes(db *sql.DB, ev *Event) error {
-	rows, err := db.Query(`SELECT name, value FROM attributes
-			      WHERE event = ? ORDER BY position`,
+func loadAttributes(tx *sql.Tx, ev *Event) error {
+	rows, err := tx.Query(`SELECT name, value FROM attributes
+			      WHERE event = $1 ORDER BY position`,
 		ev.Serial)
 	if err != nil {
 		return err
 	}
+
+	defer rows.Close()
 
 	for rows.Next() {
 		var attr Attribute
@@ -227,26 +150,27 @@ func countEvents(db *sql.DB) (uint64, error) {
 
 var errAuditFailure = errors.New("auditlog: failed to verify audit chain")
 
-func getSignature(db *sql.DB, serial uint64) ([]byte, error) {
+func getSignature(tx *sql.Tx, serial uint64) ([]byte, error) {
 	var sig []byte
-	err := db.QueryRow(`SELECT signature FROM events WHERE id=?`, serial).Scan(&sig)
+	err := tx.QueryRow(`SELECT signature FROM events WHERE id=$1`,
+		serial).Scan(&sig)
 	if err != nil {
 		return nil, err
 	}
 	return sig, nil
 }
 
-func loadEvent(db *sql.DB, serial uint64) (*Event, error) {
+func loadEvent(tx *sql.Tx, serial uint64) (*Event, error) {
 	var ev Event
 
-	row := db.QueryRow(`SELECT * FROM events WHERE id=?`, serial)
+	row := tx.QueryRow(`SELECT * FROM events WHERE id=$1`, serial)
 	err := row.Scan(&ev.Serial, &ev.When, &ev.Received, &ev.Level,
 		&ev.Actor, &ev.Event, &ev.Signature)
 	if err != nil {
 		return nil, err
 	}
 
-	err = loadAttributes(db, &ev)
+	err = loadAttributes(tx, &ev)
 	if err != nil {
 		return nil, err
 	}
@@ -254,29 +178,29 @@ func loadEvent(db *sql.DB, serial uint64) (*Event, error) {
 	return &ev, nil
 }
 
-func (l *Logger) verifyEvent(serial uint64) error {
+func (l *Logger) verifyEvent(tx *sql.Tx, serial uint64) error {
 	var prev []byte
-	err := begin(l.db)
+	tx, err := l.db.Begin()
 	if err != nil {
 		return err
 	}
 
 	defer func() {
 		if err != nil {
-			rollback(l.db)
+			tx.Rollback()
 		} else {
-			commit(l.db)
+			tx.Commit()
 		}
 	}()
 
 	if serial > 0 {
-		prev, err = getSignature(l.db, serial-1)
+		prev, err = getSignature(tx, serial-1)
 		if err != nil {
 			return err
 		}
 	}
 
-	ev, err := loadEvent(l.db, serial)
+	ev, err := loadEvent(tx, serial)
 	if err != nil {
 		return err
 	}
@@ -290,26 +214,41 @@ func (l *Logger) verifyEvent(serial uint64) error {
 }
 
 func (l *Logger) verifyAuditChain() error {
-	var err error
-	for i := uint64(0); i < l.counter; i++ {
-		err = l.verifyEvent(i)
+	tx, err := l.db.Begin()
+	if err != nil {
+		return err
+	}
+
+	defer func() {
 		if err != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}()
+
+	for i := uint64(0); i < l.counter; i++ {
+		err = l.verifyEvent(tx, i)
+		if err != nil {
+			log.Println("Signature failure on event", i)
 			return err
 		}
 	}
 
-	l.lastSignature, err = getSignature(l.db, l.counter)
+	l.lastSignature, err = getSignature(tx, l.counter-1)
 
 	return nil
 }
 
-func loadErrorAttributes(db *sql.DB, ev *Event) error {
-	rows, err := db.Query(`SELECT name, value FROM error_attributes
-			      WHERE event = ? ORDER BY position`,
+func loadErrorAttributes(tx *sql.Tx, ev *Event) error {
+	rows, err := tx.Query(`SELECT name, value FROM error_attributes
+			      WHERE event = $1 ORDER BY position`,
 		ev.Serial)
 	if err != nil {
 		return err
 	}
+
+	defer rows.Close()
 
 	for rows.Next() {
 		var attr Attribute
@@ -323,11 +262,13 @@ func loadErrorAttributes(db *sql.DB, ev *Event) error {
 	return nil
 }
 
-func loadErrors(db *sql.DB, start, end uint64) (events []*ErrorEvent, err error) {
-	rows, err := db.Query(`SELECT * FROM error_events WHERE serial >= ? AND serial <= ?`, start, end)
+func loadErrors(tx *sql.Tx, start, end uint64) (events []*ErrorEvent, err error) {
+	rows, err := tx.Query(`SELECT * FROM error_events WHERE serial >= $1 AND serial <= $2`, start, end)
 	if err != nil {
 		return
 	}
+
+	defer rows.Close()
 
 	for rows.Next() {
 		var ev Event
@@ -340,13 +281,13 @@ func loadErrors(db *sql.DB, start, end uint64) (events []*ErrorEvent, err error)
 			return
 		}
 
-		err = loadErrorAttributes(db, &ev)
+		err = loadErrorAttributes(tx, &ev)
 		if err != nil {
 			events = nil
 			return
 		}
 
-		err = db.QueryRow(`SELECT timestamp, message FROM errors WHERE event=?`, eventID).Scan(&errEv.When, &errEv.Message)
+		err = tx.QueryRow(`SELECT timestamp, message FROM errors WHERE event=$1`, eventID).Scan(&errEv.When, &errEv.Message)
 		if err != nil {
 			events = nil
 			return
