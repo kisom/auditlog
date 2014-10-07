@@ -93,3 +93,23 @@ func publicFingerprint(signer *ecdsa.PublicKey) []byte {
 	h.Write(signer.Y.Bytes())
 	return h.Sum(nil)
 }
+
+// RootSignature returns the signature of the root event (i.e. the
+// event with serial = 0). The user can store a copy of this, and use
+// it to ensure the root of the chain has not been tampered with.
+func (l *Logger) RootSignature() ([]byte, error) {
+	tx, err := l.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+
+	signature, err := getSignature(tx, 0)
+	if err != nil {
+		tx.Rollback()
+		signature = nil
+	} else {
+		tx.Commit()
+	}
+
+	return signature, err
+}
